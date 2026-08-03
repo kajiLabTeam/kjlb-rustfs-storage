@@ -14,6 +14,12 @@ Docker Compose の profile で 3 段階に分かれる。
 | `observability` | otel-collector, prometheus, tempo, loki, grafana | 監視 |
 | `proxy` | nginx | リバースプロキシ |
 
+## 前提
+
+Linux サーバー上での実行を前提とする。データとログはホストの `/srv/rustfs/` に
+bind mount するため、macOS の Docker Desktop では `/srv` が既定で共有されておらず
+そのままでは起動しない（File Sharing に追加するか、パスを書き換える必要がある）。
+
 ## 起動
 
 ```sh
@@ -24,7 +30,8 @@ docker compose up -d
 docker compose --profile observability --profile proxy up -d
 ```
 
-停止は `down`、データも消す場合は `down -v`。
+停止は `down`。データは `/srv/rustfs/` に残るため、消す場合はホスト側で削除する
+（`down -v` で消えるのは監視スタックの named volume のみ）。
 
 ## エンドポイント
 
@@ -38,6 +45,18 @@ docker compose --profile observability --profile proxy up -d
 | http://localhost:9090 | Prometheus |
 | http://localhost:3200 | Tempo |
 | http://localhost:3100 | Loki |
+
+## データ配置
+
+| ホスト | コンテナ | 内容 |
+| --- | --- | --- |
+| `/srv/rustfs/data` | `/data` | オブジェクトデータ（SNSD では `/data/rustfs0`） |
+| `/srv/rustfs/logs` | `/logs` | RustFS のログ |
+
+bind mount 先は Docker が root 所有で作成するため、`volume-permission-helper` が
+起動前に RustFS の実行ユーザ (10001:10001) へ chown する。
+
+監視スタックのデータ (Prometheus / Grafana / Tempo / Loki) は named volume を使う。
 
 ## 設定 (.env)
 
@@ -80,9 +99,11 @@ nginx で TLS 終端する場合は `.docker/nginx/ssl/` に証明書を配置�
 
 `compose.yaml` の rustfs サービスを次のように変更する。
 
-1. `RUSTFS_VOLUMES=/data/rustfs{0...3}`
-2. `rustfs_data_1` 〜 `rustfs_data_3` の volume 定義とマウントを追加
-3. `volume-permission-helper` にも同じ volume をマウントし chown 対象に追加
+1. `RUSTFS_VOLUMES=/data/rustfs{0...3}` に変更
+2. ホスト側で各物理ディスクを `/srv/rustfs/data/rustfs0` 〜 `rustfs3` にマウント
+
+bind mount は `/srv/rustfs/data` ごと渡しているため、compose 側の volumes 定義は
+変更不要。chown も `volume-permission-helper` が再帰的に処理する。
 
 ## 由来
 
@@ -91,6 +112,7 @@ nginx で TLS 終端する場合は `.docker/nginx/ssl/` に証明書を配置�
 上流から変更した主な点:
 
 - ディスク 4 本 → 1 本（SNSD）
+- ストレージのデータ・ログを named volume から `/srv/rustfs/` の bind mount に変更
 - Jaeger を削除（トレースは Tempo に集約）
 - 全イメージのバージョンを固定
 - ソースビルド用サービス (`rustfs-dev`) を削除し、公開イメージを使用

@@ -10,7 +10,7 @@ services:
     environment:
       # SNSD (Single Node Single Disk) 構成
       # SNMD へ移行する場合は /data/rustfs{0...3} のように展開し、
-      # volumes に rustfs_data_1..3 を追加する
+      # ホスト側で各ディスクを /srv/rustfs/data/rustfs0..3 にマウントする
       - RUSTFS_VOLUMES=/data/rustfs0
       - RUSTFS_ADDRESS=0.0.0.0:9000
       - RUSTFS_CONSOLE_ADDRESS=0.0.0.0:9001
@@ -19,12 +19,13 @@ services:
       - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY:-rustfsadmin} # CHANGEME
       - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY:-rustfsadmin} # CHANGEME
       - RUSTFS_OBS_LOGGER_LEVEL=info
+      - RUSTFS_OBS_LOG_DIRECTORY=/logs
       # 監視スタック (profile: observability) を併用する場合のみ .env で
       # RUSTFS_OBS_ENDPOINT=http://otel-collector:4318 を設定する
       - RUSTFS_OBS_ENDPOINT=${RUSTFS_OBS_ENDPOINT:-}
     volumes:
-      - rustfs_data_0:/data/rustfs0
-      - logs:/app/logs
+      - /srv/rustfs/data:/data
+      - /srv/rustfs/logs:/logs
     networks:
       - rustfs-network
     restart: unless-stopped
@@ -44,14 +45,16 @@ services:
       volume-permission-helper:
         condition: service_completed_successfully
 
-  # RustFS の実行ユーザ (10001:10001) に合わせて named volume の所有者を調整する
+  # RustFS の実行ユーザ (10001:10001) に合わせてバインドマウント先の所有者を調整する。
+  # bind mount のディレクトリは Docker が root 所有で作成するため、これが無いと起動に失敗する。
   volume-permission-helper:
     image: alpine:3.22
+    user: root
     volumes:
-      - rustfs_data_0:/data0
-      - logs:/logs
+      - /srv/rustfs/data:/data
+      - /srv/rustfs/logs:/logs
     command: >
-      sh -c "chown -R 10001:10001 /data0 /logs && echo 'Volume permissions fixed'"
+      sh -c "chown -R 10001:10001 /data /logs && echo 'Volume permissions fixed'"
     restart: "no"
 
   # --- 監視スタック (profile: observability) ---
@@ -202,10 +205,6 @@ networks:
     driver: bridge
 
 volumes:
-  rustfs_data_0:
-    driver: local
-  logs:
-    driver: local
   tempo_data:
     driver: local
   loki_data:
