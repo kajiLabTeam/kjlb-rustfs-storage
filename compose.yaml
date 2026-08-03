@@ -82,8 +82,10 @@ services:
     volumes:
       - ./.docker/observability/tempo.yaml:/etc/tempo.yaml:ro
       - tempo_data:/var/tempo
-    ports:
-      - "${TEMPO_PORT:-3200}:3200" # Tempo API
+    # ホストへのポート公開はしない。参照は Grafana 経由。
+    expose:
+      - "3200" # Tempo API
+      - "4317" # OTLP gRPC (otel-collector から)
     networks:
       - rustfs-network
     restart: unless-stopped
@@ -100,8 +102,9 @@ services:
     volumes:
       - ./.docker/observability/loki.yaml:/etc/loki/local-config.yaml:ro
       - loki_data:/loki
-    ports:
-      - "${LOKI_PORT:-3100}:3100"
+    # ホストへのポート公開はしない。参照は Grafana 経由。
+    expose:
+      - "3100"
     networks:
       - rustfs-network
     restart: unless-stopped
@@ -118,11 +121,19 @@ services:
       - "--web.enable-lifecycle"
       - "--web.enable-otlp-receiver"
       - "--web.enable-remote-write-receiver"
+      # nginx の /prometheus/ 配下で配信する。
+      # external-url は生成するリンクの絶対URL用。route-prefix=/ を明示して
+      # 内部的にはルートで待ち受けさせ、prefix の除去は nginx 側で行う。
+      # (route-prefix を /prometheus/ にすると自己スクレイプと
+      #  Grafana データソースが 404 になる)
+      - "--web.external-url=${PROMETHEUS_EXTERNAL_URL:-http://localhost/prometheus/}"
+      - "--web.route-prefix=/"
     volumes:
       - ./.docker/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
-    ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
+    # ホストへのポート公開はしない。アクセスは nginx (profile: proxy) 経由に限定する。
+    expose:
+      - "9090"
     networks:
       - rustfs-network
     restart: unless-stopped
@@ -136,12 +147,14 @@ services:
       - --config=/etc/otelcol-contrib/otel-collector.yml
     volumes:
       - ./.docker/observability/otel-collector-config.yaml:/etc/otelcol-contrib/otel-collector.yml:ro
-    ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-      - "8888:8888"   # Collector 自身のメトリクス
-      - "8889:8889"   # アプリケーションメトリクス
-      - "13133:13133" # ヘルスチェック
+    # ホストへのポート公開はしない。テレメトリの受信は同一ネットワーク内に限定する。
+    # ホスト外のアプリからも送信したい場合のみ ports で 4317/4318 を公開する。
+    expose:
+      - "4317"  # OTLP gRPC
+      - "4318"  # OTLP HTTP
+      - "8888"  # Collector 自身のメトリクス (Prometheus が scrape)
+      - "8889"  # アプリケーションメトリクス (Prometheus が scrape)
+      - "13133" # ヘルスチェック
     networks:
       - rustfs-network
     restart: unless-stopped
