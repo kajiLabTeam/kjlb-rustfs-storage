@@ -12,7 +12,10 @@ Docker Compose の profile で 3 段階に分かれる。
 | --- | --- | --- |
 | (なし) | rustfs, volume-permission-helper | ストレージ本体 |
 | `observability` | otel-collector, prometheus, tempo, loki, grafana | 監視 |
-| `proxy` | nginx | リバースプロキシ |
+| `proxy` | nginx | リバースプロキシ（S3 API への唯一の入口） |
+
+rustfs はホストにポートを公開しない。S3 API とコンソールへのアクセスは
+すべて nginx 経由に限定しているため、**`proxy` profile が必須**。
 
 ## 前提
 
@@ -23,11 +26,11 @@ bind mount するため、macOS の Docker Desktop では `/srv` が既定で共
 ## 起動
 
 ```sh
-# ストレージのみ
-docker compose up -d
+# ストレージ + プロキシ（通常はこれ）
+docker compose --profile proxy up -d
 
-# 監視・プロキシ込み
-docker compose --profile observability --profile proxy up -d
+# 監視込み
+docker compose --profile proxy --profile observability up -d
 ```
 
 停止は `down`。データは `/srv/rustfs/` に残るため、消す場合はホスト側で削除する
@@ -37,11 +40,9 @@ docker compose --profile observability --profile proxy up -d
 
 | URL | 内容 |
 | --- | --- |
-| http://localhost:9000 | S3 API |
-| http://localhost:9001 | RustFS コンソール |
-| http://localhost | nginx 経由の S3 API |
-| http://localhost/rustfs/console | nginx 経由のコンソール |
-| http://localhost:3000 | Grafana（RustFS ダッシュボード 7 種を自動プロビジョニング） |
+| http://localhost/ | S3 API（nginx 経由） |
+| http://localhost/rustfs/console | RustFS コンソール（nginx 経由） |
+| http://localhost/grafana/ | Grafana（nginx 経由。RustFS ダッシュボード 7 種を自動プロビジョニング） |
 | http://localhost:9090 | Prometheus |
 | http://localhost:3200 | Tempo |
 | http://localhost:3100 | Loki |
@@ -72,11 +73,15 @@ RUSTFS_OBS_ENDPOINT=http://otel-collector:4318
 # Grafana 管理者（既定は admin / admin）
 GRAFANA_ADMIN_USER=...
 GRAFANA_ADMIN_PASSWORD=...
+GRAFANA_ROOT_URL=https://storage.example.com/grafana/
 ```
 
 ホスト側ポートが他プロセスと衝突する場合は `.env` で上書きできる。
-`RUSTFS_API_PORT` / `RUSTFS_CONSOLE_PORT` / `PROMETHEUS_PORT` / `GRAFANA_PORT` /
-`TEMPO_PORT` / `LOKI_PORT` / `NGINX_HTTP_PORT` / `NGINX_HTTPS_PORT`。
+`NGINX_HTTP_PORT` / `NGINX_HTTPS_PORT` / `PROMETHEUS_PORT` / `TEMPO_PORT` / `LOKI_PORT`。
+
+Grafana も rustfs と同様にホストへポートを公開せず、nginx の `/grafana/` 配下で配信する。
+外部から見えるホスト名が `localhost` 以外の場合は `.env` で `GRAFANA_ROOT_URL` を設定する
+（例: `GRAFANA_ROOT_URL=https://storage.example.com/grafana/`）。
 
 ## テレメトリの流れ
 
@@ -89,6 +94,23 @@ rustfs --OTLP--> otel-collector --+--> tempo      (トレース)
 ```
 
 設定ファイルは `.docker/observability/` 配下。
+
+## nginx と SigV4
+
+S3 の SigV4 署名は **Host ヘッダとリクエストパスを署名対象に含む**ため、
+プロキシで以下をやると `SignatureDoesNotMatch` になる。設定変更時は要注意。
+
+- サブパスでの配信（`https://example.com/s3/` など）。S3 API は必ずルート `/` で配信する
+- パスの書き換え（`proxy_pass` の末尾に URI を付ける、`rewrite` など）
+- Host ヘッダの差し替え。`$host` はポート番号を落とすため `$http_host` を使う
+- HEAD → GET 変換（nginx の既定動作）。`proxy_cache_convert_head off` で明示的に切る
+
+なお nginx の location prefix はパス形式 S3 の先頭セグメント（バケット名）と
+名前空間を共有するため、**`rustfs` と `grafana` という名前のバケットは作らないこと**。
+
+Grafana は `observability` profile のみに存在するため、nginx はその不在時でも
+起動できるよう Docker 内蔵 DNS で実行時に名前解決している（`proxy` profile 単独で
+起動した場合、`/grafana/` は 502 を返す）。
 
 ## TLS
 
@@ -116,3 +138,6 @@ bind mount は `/srv/rustfs/data` ごと渡しているため、compose 側の v
 - Jaeger を削除（トレースは Tempo に集約）
 - 全イメージのバージョンを固定
 - ソースビルド用サービス (`rustfs-dev`) を削除し、公開イメージを使用
+- rustfs と Grafana のポート公開をやめ、nginx 経由のみに限定
+- nginx を SigV4 対応に修正（`$http_host` 引き渡し、`proxy_cache_convert_head off`、
+  keepalive、大容量オブジェクト向けのバッファリング無効化）

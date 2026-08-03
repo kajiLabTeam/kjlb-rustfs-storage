@@ -4,9 +4,11 @@ services:
     container_name: rustfs-server
     security_opt:
       - "no-new-privileges:true"
-    ports:
-      - "${RUSTFS_API_PORT:-9000}:9000" # S3 API
-      - "${RUSTFS_CONSOLE_PORT:-9001}:9001" # Console
+    # ホストへのポート公開はしない。S3 API とコンソールへのアクセスは
+    # すべて nginx (profile: proxy) 経由に限定する。
+    expose:
+      - "9000" # S3 API
+      - "9001" # Console
     environment:
       # SNSD (Single Node Single Disk) 構成
       # SNMD へ移行する場合は /data/rustfs{0...3} のように展開し、
@@ -156,12 +158,17 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin} # CHANGEME
+      # nginx の /grafana/ 配下で配信するための設定。
+      # 外部から見えるホスト名が localhost 以外なら .env で GRAFANA_ROOT_URL を上書きする。
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost/grafana/}
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
     volumes:
       - grafana_data:/var/lib/grafana
       - ./.docker/observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./.docker/observability/grafana/dashboards:/etc/grafana/dashboards:ro
-    ports:
-      - "${GRAFANA_PORT:-3000}:3000"
+    # ホストへのポート公開はしない。アクセスは nginx (profile: proxy) 経由に限定する。
+    expose:
+      - "3000"
     networks:
       - rustfs-network
     restart: unless-stopped
