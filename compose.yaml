@@ -5,8 +5,8 @@ services:
     security_opt:
       - "no-new-privileges:true"
     ports:
-      - "9000:9000" # S3 API
-      - "9001:9001" # Console
+      - "${RUSTFS_API_PORT:-9000}:9000" # S3 API
+      - "${RUSTFS_CONSOLE_PORT:-9001}:9001" # Console
     environment:
       # SNSD (Single Node Single Disk) 構成
       # SNMD へ移行する場合は /data/rustfs{0...3} のように展開し、
@@ -19,6 +19,9 @@ services:
       - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY:-rustfsadmin} # CHANGEME
       - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY:-rustfsadmin} # CHANGEME
       - RUSTFS_OBS_LOGGER_LEVEL=info
+      # 監視スタック (profile: observability) を併用する場合のみ .env で
+      # RUSTFS_OBS_ENDPOINT=http://otel-collector:4318 を設定する
+      - RUSTFS_OBS_ENDPOINT=${RUSTFS_OBS_ENDPOINT:-}
     volumes:
       - rustfs_data_0:/data/rustfs0
       - logs:/app/logs
@@ -51,6 +54,149 @@ services:
       sh -c "chown -R 10001:10001 /data0 /logs && echo 'Volume permissions fixed'"
     restart: "no"
 
+  # --- 監視スタック (profile: observability) ---
+  # 起動: docker compose --profile observability up -d
+
+  tempo-init:
+    image: busybox:1.37
+    command: ["sh", "-c", "chown -R 10001:10001 /var/tempo"]
+    user: root
+    volumes:
+      - tempo_data:/var/tempo
+    networks:
+      - rustfs-network
+    restart: "no"
+    profiles:
+      - observability
+
+  tempo:
+    image: grafana/tempo:2.10.5
+    container_name: tempo
+    user: "10001"
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./.docker/observability/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "${TEMPO_PORT:-3200}:3200" # Tempo API
+    networks:
+      - rustfs-network
+    restart: unless-stopped
+    profiles:
+      - observability
+    depends_on:
+      tempo-init:
+        condition: service_completed_successfully
+
+  loki:
+    image: grafana/loki:3.7.4
+    container_name: loki
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./.docker/observability/loki.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    networks:
+      - rustfs-network
+    restart: unless-stopped
+    profiles:
+      - observability
+
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    container_name: prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+      - "--web.enable-otlp-receiver"
+      - "--web.enable-remote-write-receiver"
+    volumes:
+      - ./.docker/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - rustfs-network
+    restart: unless-stopped
+    profiles:
+      - observability
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.157.0
+    container_name: otel-collector
+    command:
+      - --config=/etc/otelcol-contrib/otel-collector.yml
+    volumes:
+      - ./.docker/observability/otel-collector-config.yaml:/etc/otelcol-contrib/otel-collector.yml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Collector 自身のメトリクス
+      - "8889:8889"   # アプリケーションメトリクス
+      - "13133:13133" # ヘルスチェック
+    networks:
+      - rustfs-network
+    restart: unless-stopped
+    profiles:
+      - observability
+    depends_on:
+      - tempo
+      - prometheus
+      - loki
+
+  grafana:
+    image: grafana/grafana:12.4.6
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin} # CHANGEME
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./.docker/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./.docker/observability/grafana/dashboards:/etc/grafana/dashboards:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    networks:
+      - rustfs-network
+    restart: unless-stopped
+    profiles:
+      - observability
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
+  # --- リバースプロキシ (profile: proxy) ---
+  # 起動: docker compose --profile proxy up -d
+  # TLS を使う場合は .docker/nginx/ssl/ に証明書を置き、nginx.conf の 443 ブロックを有効化する
+
+  nginx:
+    image: nginx:1.29-alpine
+    container_name: nginx-proxy
+    security_opt:
+      - "no-new-privileges:true"
+    read_only: true
+    volumes:
+      - ./.docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./.docker/nginx/ssl:/etc/nginx/ssl:ro
+    tmpfs:
+      - /var/run
+      - /var/cache/nginx
+      - /var/log/nginx
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    networks:
+      - rustfs-network
+    restart: unless-stopped
+    profiles:
+      - proxy
+    depends_on:
+      - rustfs
+
 networks:
   rustfs-network:
     driver: bridge
@@ -59,4 +205,12 @@ volumes:
   rustfs_data_0:
     driver: local
   logs:
+    driver: local
+  tempo_data:
+    driver: local
+  loki_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
     driver: local
