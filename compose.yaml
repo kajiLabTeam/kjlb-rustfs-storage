@@ -1,15 +1,17 @@
 services:
   rustfs:
-    image: rustfs/rustfs:latest
+    image: rustfs/rustfs:1.0.0-beta.12
     container_name: rustfs-server
-    build:
-      context: .
-      dockerfile: dockerfile
+    security_opt:
+      - "no-new-privileges:true"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9000:9000" # S3 API
+      - "9001:9001" # Console
     environment:
-      - RUSTFS_VOLUMES=/data/rustfs{0...3}
+      # SNSD (Single Node Single Disk) 構成
+      # SNMD へ移行する場合は /data/rustfs{0...3} のように展開し、
+      # volumes に rustfs_data_1..3 を追加する
+      - RUSTFS_VOLUMES=/data/rustfs0
       - RUSTFS_ADDRESS=0.0.0.0:9000
       - RUSTFS_CONSOLE_ADDRESS=0.0.0.0:9001
       - RUSTFS_CONSOLE_ENABLE=true
@@ -17,47 +19,44 @@ services:
       - RUSTFS_ACCESS_KEY=${RUSTFS_ACCESS_KEY:-rustfsadmin} # CHANGEME
       - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY:-rustfsadmin} # CHANGEME
       - RUSTFS_OBS_LOGGER_LEVEL=info
-      - RUSTFS_UNSAFE_BYPASS_DISK_CHECK=true
     volumes:
       - rustfs_data_0:/data/rustfs0
-      - rustfs_data_1:/data/rustfs1
-      - rustfs_data_2:/data/rustfs2
-      - rustfs_data_3:/data/rustfs3
       - logs:/app/logs
     networks:
       - rustfs-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "sh","-c", "curl -f http://localhost:9000/health && curl -f http://localhost:9001/rustfs/console/health"]
+      test:
+        [
+          "CMD",
+          "sh",
+          "-ec",
+          "curl -fsS http://127.0.0.1:9000/health && curl -fsS http://127.0.0.1:9001/rustfs/console/health",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 40s
+    depends_on:
+      volume-permission-helper:
+        condition: service_completed_successfully
 
+  # RustFS の実行ユーザ (10001:10001) に合わせて named volume の所有者を調整する
   volume-permission-helper:
-    image: alpine
+    image: alpine:3.22
     volumes:
       - rustfs_data_0:/data0
-      - rustfs_data_1:/data1
-      - rustfs_data_2:/data2
-      - rustfs_data_3:/data3
       - logs:/logs
     command: >
-      sh -c "
-        chown -R 10001:10001 /data0 /data1 /data2 /data3 /logs &&
-        echo 'Volume Permissions fixed' &&
-        exit 0
-      "
-    # Permission baseline:
-    # - default RustFS runtime user is 10001:10001
-    # - alternatively, run rustfs service with host-matched `user: \"<uid>:<gid>\"`
+      sh -c "chown -R 10001:10001 /data0 /logs && echo 'Volume permissions fixed'"
     restart: "no"
 
 networks:
   rustfs-network:
+    driver: bridge
 
 volumes:
   rustfs_data_0:
-  rustfs_data_1:
-  rustfs_data_2:
-  rustfs_data_3:
+    driver: local
   logs:
+    driver: local
