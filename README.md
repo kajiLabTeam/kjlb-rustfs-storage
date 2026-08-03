@@ -42,15 +42,29 @@ Linux サーバー上での実行を前提とする（データを `/srv/rustfs/
 するため、macOS の Docker Desktop ではそのままでは動かない）。
 
 ```sh
-sudo mkdir -p /srv/rustfs/data /srv/rustfs/logs
-
 cat > .env <<'EOF'
 RUSTFS_ACCESS_KEY=<ACCESS_KEY>
 RUSTFS_SECRET_KEY=<SECRET_KEY>
 GRAFANA_ADMIN_PASSWORD=<PASSWORD>
 EOF
 
-docker compose --profile proxy up -d
+make setup    # データディレクトリを作成
+make up       # 起動 (rustfs + nginx)
+make health   # 疎通確認
+```
+
+よく使う操作は Makefile にまとめてある。`make` で一覧を表示。
+
+```
+make up          起動する (rustfs + nginx)
+make up-all      監視スタック込みで起動する
+make down        停止する
+make ps          コンテナの状態を表示する
+make logs S=rustfs  ログを追う
+make health      各エンドポイントの疎通を確認する
+make s3-check    S3 の疎通を確認する (署名・HEAD・特殊文字キー)
+make nginx-reload   nginx.conf の変更を反映する
+make backup DEST=... オブジェクトデータをバックアップする
 ```
 
 詳細は [運用ガイド](docs/operations.md) を参照。

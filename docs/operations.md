@@ -35,6 +35,8 @@ chmod 600 .env
 docker compose --profile proxy --profile observability up -d
 ```
 
+`make setup` と `make up-all` でも同じことができる。
+
 ディレクトリの所有者は `volume-permission-helper` が起動時に
 RustFS の実行ユーザ (10001:10001) へ変更するため、手動の chown は不要。
 
@@ -47,6 +49,17 @@ profile でサービス群を切り替える。
 | （なし） | rustfs, volume-permission-helper |
 | `proxy` | nginx |
 | `observability` | otel-collector, prometheus, tempo, loki, grafana |
+
+Makefile に主要な操作をまとめてある（`make` で一覧）。
+以下は同等の docker compose コマンド。
+
+| make | docker compose |
+| --- | --- |
+| `make up` | `docker compose --profile proxy up -d` |
+| `make up-all` | `docker compose --profile proxy --profile observability up -d` |
+| `make down` | `docker compose --profile proxy --profile observability down` |
+| `make ps` | `... ps` |
+| `make logs S=rustfs` | `... logs -f rustfs` |
 
 ```sh
 # 通常運用
@@ -132,9 +145,8 @@ nginx.conf を編集する際は以下を壊さないこと。
 変更後は必ず以下で疎通確認する。
 
 ```sh
-EP=http://localhost
-aws --endpoint-url $EP s3api head-object --bucket <bucket> --key <key>   # HEAD
-aws --endpoint-url $EP s3 cp ./f "s3://<bucket>/a b/日本語 +file.txt"    # パス正規化
+make nginx-reload   # 構文チェックしてから再読込
+make s3-check       # 署名・HEAD・特殊文字キーの疎通確認
 ```
 
 `/grafana/` と `/prometheus/` は S3 ではないので、これらの制約は適用されない。
@@ -145,6 +157,9 @@ SNSD 構成には冗長性が無い。ディスク障害＝データ損失にな
 バックアップは必須。
 
 ```sh
+# ローカルの別ディスクへ
+make backup DEST=/mnt/backup/rustfs
+
 # 別ホストへ同期する例
 rsync -a --delete /srv/rustfs/data/ backup-host:/backup/rustfs/data/
 
