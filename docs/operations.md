@@ -22,20 +22,36 @@ cd kjlb-rustfs-storage
 sudo mkdir -p /srv/rustfs/data /srv/rustfs/logs
 
 # 認証情報を設定（.env は Git 管理外）
-cat > .env <<'EOF'
-RUSTFS_ACCESS_KEY=<英数字で十分な長さのもの>
-RUSTFS_SECRET_KEY=<推測不能なランダム文字列>
-GRAFANA_ADMIN_PASSWORD=<推測不能なランダム文字列>
-GRAFANA_ROOT_URL=https://storage.example.com/grafana/
-PROMETHEUS_EXTERNAL_URL=https://storage.example.com/prometheus/
-RUSTFS_OBS_ENDPOINT=http://otel-collector:4318
-EOF
-chmod 600 .env
+make env          # .env.example から生成し、秘密情報はランダム生成される
+$EDITOR .env      # ホスト名など環境に合わせて調整
+make env-check    # 未設定・弱い値がないか確認
 
 docker compose --profile proxy --profile observability up -d
 ```
 
 `make setup` と `make up-all` でも同じことができる。
+
+### .env の項目
+
+全項目の説明は `.env.example` にある。要点は以下。
+
+| 変数 | 未設定時 | 備考 |
+| --- | --- | --- |
+| `RUSTFS_ACCESS_KEY` | `rustfsadmin` | **必ず設定する**（既定値は公知） |
+| `RUSTFS_SECRET_KEY` | `rustfsadmin` | **必ず設定する**。32文字以上を推奨 |
+| `GRAFANA_ADMIN_USER` | `admin` | |
+| `GRAFANA_ADMIN_PASSWORD` | `admin` | **必ず設定する** |
+| `RUSTFS_OBS_ENDPOINT` | 空（送信しない） | 監視を使うなら `http://otel-collector:4318` |
+| `GRAFANA_ROOT_URL` | `http://localhost/grafana/` | 外部から見えるURLに合わせる |
+| `PROMETHEUS_EXTERNAL_URL` | `http://localhost/prometheus/` | 同上 |
+| `NGINX_HTTP_PORT` | `80` | 変更時はクライアントのエンドポイントURLにもポートを含める |
+| `NGINX_HTTPS_PORT` | `443` | 同上 |
+
+`.env` を変更したら、コンテナを再作成しないと反映されない。
+
+```sh
+make up-all   # 変更のあったサービスだけ再作成される
+```
 
 ディレクトリの所有者は `volume-permission-helper` が起動時に
 RustFS の実行ユーザ (10001:10001) へ変更するため、手動の chown は不要。

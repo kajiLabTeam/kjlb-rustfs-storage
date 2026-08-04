@@ -18,7 +18,7 @@ endif
 ENDPOINT ?= http://localhost
 
 .DEFAULT_GOAL := help
-.PHONY: help setup up up-all down down-all restart ps logs logs-rustfs health \
+.PHONY: help env env-check setup up up-all down down-all restart ps logs logs-rustfs health \
         config nginx-test nginx-reload pull update backup console shell \
         s3-ls s3-mb s3-check clean
 
@@ -31,6 +31,38 @@ help:
 	     $(MAKEFILE_LIST)
 
 # ---------------------------------------------------------------- セットアップ
+
+## .env を .env.example から生成する (秘密情報は自動生成)
+env:
+	@test ! -f $(ENV_FILE) || { echo "!! $(ENV_FILE) は既に存在します。上書きする場合は削除してから実行してください"; exit 1; }
+	@sk=$$(openssl rand -base64 32 | tr -d '/+=' | cut -c1-40); \
+	 gp=$$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24); \
+	 sed -e "s|^RUSTFS_ACCESS_KEY=.*|RUSTFS_ACCESS_KEY=rustfs|" \
+	     -e "s|^RUSTFS_SECRET_KEY=.*|RUSTFS_SECRET_KEY=$${sk}|" \
+	     -e "s|^GRAFANA_ADMIN_PASSWORD=.*|GRAFANA_ADMIN_PASSWORD=$${gp}|" \
+	     .env.example > $(ENV_FILE)
+	@chmod 600 $(ENV_FILE)
+	@echo "OK: $(ENV_FILE) を生成しました。内容を確認してください:"
+	@grep -E '^(RUSTFS_ACCESS_KEY|RUSTFS_SECRET_KEY|GRAFANA_ADMIN_PASSWORD)=' $(ENV_FILE) | sed 's/^/  /'
+
+## .env に不足している項目を確認する
+env-check:
+	@test -f $(ENV_FILE) || { echo "!! $(ENV_FILE) がありません。make env で生成してください"; exit 1; }
+	@awk -F= '\
+	  /^RUSTFS_ACCESS_KEY=/      {v[$$1]=$$2} \
+	  /^RUSTFS_SECRET_KEY=/      {v[$$1]=$$2} \
+	  /^GRAFANA_ADMIN_PASSWORD=/ {v[$$1]=$$2} \
+	  END { \
+	    ng=0; \
+	    split("RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY GRAFANA_ADMIN_PASSWORD", k, " "); \
+	    for (i in k) if (v[k[i]] == "") { printf "  未設定: %s\n", k[i]; ng=1 } \
+	    if (v["RUSTFS_SECRET_KEY"] != "" && length(v["RUSTFS_SECRET_KEY"]) < 32) { \
+	      printf "  警告: RUSTFS_SECRET_KEY が %d 文字です (32文字以上を推奨)\n", \
+	             length(v["RUSTFS_SECRET_KEY"]); ng=1 } \
+	    if (v["GRAFANA_ADMIN_PASSWORD"] == "admin") { \
+	      print "  警告: GRAFANA_ADMIN_PASSWORD が既定値のままです"; ng=1 } \
+	    if (ng == 0) print "$(ENV_FILE) OK" \
+	  }' $(ENV_FILE)
 
 ## データディレクトリを作成する (要 sudo)
 setup:

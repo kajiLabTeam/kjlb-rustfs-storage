@@ -42,16 +42,13 @@ Linux サーバー上での実行を前提とする（データを `/srv/rustfs/
 するため、macOS の Docker Desktop ではそのままでは動かない）。
 
 ```sh
-cat > .env <<'EOF'
-RUSTFS_ACCESS_KEY=<ACCESS_KEY>
-RUSTFS_SECRET_KEY=<SECRET_KEY>
-GRAFANA_ADMIN_PASSWORD=<PASSWORD>
-EOF
-
+make env      # .env を生成 (秘密情報はランダム生成)
 make setup    # データディレクトリを作成
 make up       # 起動 (rustfs + nginx)
 make health   # 疎通確認
 ```
+
+設定項目は `.env.example` を参照。`make env-check` で不足や弱い値を確認できる。
 
 よく使う操作は Makefile にまとめてある。`make` で一覧を表示。
 
