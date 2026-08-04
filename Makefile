@@ -6,14 +6,17 @@
 COMPOSE       := docker compose
 PROFILES      := --profile proxy
 PROFILES_ALL  := --profile proxy --profile observability
-DATA_ROOT     := /srv/rustfs
 ENV_FILE      := .env
 
-# .env があれば読み込む（S3 操作系のターゲットで認証情報を使う）
+# .env があれば読み込む（マウント先や S3 の認証情報を使う）
 ifneq (,$(wildcard $(ENV_FILE)))
 include $(ENV_FILE)
 export
 endif
+
+# マウント先。.env で未設定なら compose.yaml と同じ既定値を使う。
+RUSTFS_DATA_DIR ?= /srv/rustfs/data
+RUSTFS_LOGS_DIR ?= /srv/rustfs/logs
 
 ENDPOINT ?= http://localhost
 
@@ -64,9 +67,12 @@ env-check:
 	    if (ng == 0) print "$(ENV_FILE) OK" \
 	  }' $(ENV_FILE)
 
-## データディレクトリを作成する (要 sudo)
+## データディレクトリを作成する (書き込めない場所なら sudo を使う)
 setup:
-	sudo mkdir -p $(DATA_ROOT)/data $(DATA_ROOT)/logs
+	@for d in "$(RUSTFS_DATA_DIR)" "$(RUSTFS_LOGS_DIR)"; do \
+	  if mkdir -p "$$d" 2>/dev/null; then echo "  作成: $$d"; \
+	  else echo "  作成 (sudo): $$d"; sudo mkdir -p "$$d" || exit 1; fi; \
+	done
 	@test -f $(ENV_FILE) || { \
 	  echo "!! $(ENV_FILE) がありません。以下を作成してください:"; \
 	  echo "   RUSTFS_ACCESS_KEY=..."; \
@@ -74,7 +80,7 @@ setup:
 	  echo "   GRAFANA_ADMIN_PASSWORD=..."; \
 	  exit 1; \
 	}
-	@echo "OK: $(DATA_ROOT) を作成しました"
+	@echo "OK: $(RUSTFS_DATA_DIR) と $(RUSTFS_LOGS_DIR) を作成しました"
 
 # ------------------------------------------------------------------ 起動・停止
 
@@ -156,7 +162,7 @@ update: pull up-all
 ## オブジェクトデータをバックアップする (DEST=/path/to/backup)
 backup:
 	@test -n "$(DEST)" || { echo "使い方: make backup DEST=/path/to/backup"; exit 1; }
-	rsync -a --delete $(DATA_ROOT)/data/ $(DEST)/
+	rsync -a --delete $(RUSTFS_DATA_DIR)/ $(DEST)/
 	@echo "OK: $(DEST) へバックアップしました"
 
 ## コンソールの URL を表示する

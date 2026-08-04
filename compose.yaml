@@ -12,7 +12,7 @@ services:
     environment:
       # SNSD (Single Node Single Disk) 構成
       # SNMD へ移行する場合は /data/rustfs{0...3} のように展開し、
-      # ホスト側で各ディスクを /srv/rustfs/data/rustfs0..3 にマウントする
+      # ホスト側で各ディスクを ${RUSTFS_DATA_DIR}/rustfs0..3 にマウントする
       - RUSTFS_VOLUMES=/data/rustfs0
       - RUSTFS_ADDRESS=0.0.0.0:9000
       - RUSTFS_CONSOLE_ADDRESS=0.0.0.0:9001
@@ -26,8 +26,8 @@ services:
       # RUSTFS_OBS_ENDPOINT=http://otel-collector:4318 を設定する
       - RUSTFS_OBS_ENDPOINT=${RUSTFS_OBS_ENDPOINT:-}
     volumes:
-      - /srv/rustfs/data:/data
-      - /srv/rustfs/logs:/logs
+      - ${RUSTFS_DATA_DIR:-/srv/rustfs/data}:/data
+      - ${RUSTFS_LOGS_DIR:-/srv/rustfs/logs}:/logs
     networks:
       - rustfs-network
     restart: unless-stopped
@@ -53,8 +53,8 @@ services:
     image: alpine:3.22
     user: root
     volumes:
-      - /srv/rustfs/data:/data
-      - /srv/rustfs/logs:/logs
+      - ${RUSTFS_DATA_DIR:-/srv/rustfs/data}:/data
+      - ${RUSTFS_LOGS_DIR:-/srv/rustfs/logs}:/logs
     command: >
       sh -c "chown -R 10001:10001 /data /logs && echo 'Volume permissions fixed'"
     restart: "no"

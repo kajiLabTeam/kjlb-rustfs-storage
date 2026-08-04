@@ -8,9 +8,17 @@
 - Linux サーバー（データを `/srv/rustfs/` に bind mount するため）
 - Docker / Docker Compose v2
 
-macOS の Docker Desktop では `/srv` が既定で共有されていないため、
-そのままでは起動しない。File Sharing に追加するか、compose.yaml の
-マウント元パスを書き換える必要がある。
+データの保存先は `.env` の `RUSTFS_DATA_DIR` / `RUSTFS_LOGS_DIR` で変更できる
+（既定は `/srv/rustfs/data` と `/srv/rustfs/logs`）。
+
+macOS の Docker Desktop では `/srv` が既定で共有されていないためそのままでは
+起動しない。Docker Desktop の File Sharing に追加するか、`.env` で
+リポジトリ配下などの共有済みパスを指定する。
+
+```sh
+RUSTFS_DATA_DIR=./data
+RUSTFS_LOGS_DIR=./logs
+```
 
 ## セットアップ
 
@@ -18,8 +26,8 @@ macOS の Docker Desktop では `/srv` が既定で共有されていないた�
 git clone <このリポジトリ>
 cd kjlb-rustfs-storage
 
-# データディレクトリを用意
-sudo mkdir -p /srv/rustfs/data /srv/rustfs/logs
+# データディレクトリを用意（保存先は .env の RUSTFS_DATA_DIR で変更可）
+make setup
 
 # 認証情報を設定（.env は Git 管理外）
 make env          # .env.example から生成し、秘密情報はランダム生成される
@@ -46,6 +54,8 @@ docker compose --profile proxy --profile observability up -d
 | `PROMETHEUS_EXTERNAL_URL` | `http://localhost/prometheus/` | 同上 |
 | `NGINX_HTTP_PORT` | `80` | 変更時はクライアントのエンドポイントURLにもポートを含める |
 | `NGINX_HTTPS_PORT` | `443` | 同上 |
+| `RUSTFS_DATA_DIR` | `/srv/rustfs/data` | オブジェクトデータの保存先（ホスト側） |
+| `RUSTFS_LOGS_DIR` | `/srv/rustfs/logs` | ログの保存先（ホスト側） |
 
 `.env` を変更したら、コンテナを再作成しないと反映されない。
 
@@ -191,7 +201,7 @@ aws --endpoint-url http://localhost s3 sync s3://my-bucket s3://backup-bucket \
 
 | 対象 | 場所 |
 | --- | --- |
-| RustFS のログファイル | `/srv/rustfs/logs/` |
+| RustFS のログファイル | `$RUSTFS_LOGS_DIR`（既定 `/srv/rustfs/logs/`） |
 | コンテナの標準出力 | `docker compose logs -f <service>` |
 | nginx アクセスログ | `docker compose logs nginx`（tmpfs のため再起動で消える） |
 | 収集されたログ | Grafana → Explore → Loki データソース |
@@ -240,11 +250,11 @@ RustFS は現在 1.0.0 のベータ版しかリリースされていない。
 
 将来 1ノード複数ディスク（SNMD）に拡張する場合。
 
-1. ホスト側で各物理ディスクを `/srv/rustfs/data/rustfs0` 〜 `rustfs3` にマウント
+1. ホスト側で各物理ディスクを `$RUSTFS_DATA_DIR/rustfs0` 〜 `rustfs3` にマウント
 2. compose.yaml の `RUSTFS_VOLUMES` を `/data/rustfs{0...3}` に変更
 3. 再起動
 
-bind mount は `/srv/rustfs/data` ごと渡しているため、compose.yaml の
+bind mount は `$RUSTFS_DATA_DIR` ごと渡しているため、compose.yaml の
 volumes 定義は変更不要。パーミッション調整も
 `volume-permission-helper` が再帰的に処理する。
 
@@ -278,8 +288,8 @@ docker ps --format '{{.Names}}\t{{.Ports}}'
 
 ```sh
 docker compose logs volume-permission-helper
-ls -la /srv/rustfs/
-# data と logs が 10001:10001 所有であること
+ls -la "$(grep RUSTFS_DATA_DIR .env | cut -d= -f2)"
+# 10001:10001 所有であること
 ```
 
 ### /grafana/ が 502
