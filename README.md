@@ -13,27 +13,22 @@ RustFS (S3 互換オブジェクトストレージ) の Docker 構成。
 
 SNSD (Single Node Single Disk)。将来 SNMD へ拡張可能。
 
-外部に公開しているポートは **nginx の 80 / 443 のみ**。
-S3 API・コンソール・Grafana・Prometheus はすべて nginx 経由でアクセスする。
+各サービスがホストへ自身のポートを直接公開する（S3 API: 9000, コンソール: 9001,
+Grafana: 3000, Prometheus: 9090）。リバースプロキシ（TLS 終端、集約ドメインなど）
+が必要な場合は、本リポジトリの外で別途用意し、これらのポートへ接続する。
 
-```
-        外部
-         │  80 / 443
-    ┌────▼─────┐
-    │  nginx   │
-    └────┬─────┘
-         │  /                → rustfs:9000  (S3 API)
-         │  /rustfs/console  → rustfs:9001  (コンソール)
-         │  /grafana/        → grafana:3000
-         │  /prometheus/     → prometheus:9090
-```
+| サービス | 既定ポート | 環境変数 |
+| --- | --- | --- |
+| S3 API | 9000 | `RUSTFS_S3_PORT` |
+| コンソール | 9001 | `RUSTFS_CONSOLE_PORT` |
+| Grafana | 3000 | `GRAFANA_PORT` |
+| Prometheus | 9090 | `PROMETHEUS_PORT` |
 
 Docker Compose の profile でサービス群を切り替える。
 
 | profile | サービス | 用途 |
 | --- | --- | --- |
 | （なし） | rustfs, volume-permission-helper | ストレージ本体 |
-| `proxy` | nginx | 外部への唯一の入口（**必須**） |
 | `observability` | otel-collector, prometheus, tempo, loki, grafana | 監視 |
 
 ## クイックスタート
@@ -44,7 +39,7 @@ Linux サーバー上での実行を前提とする（データを `/srv/rustfs/
 ```sh
 make env      # .env を生成 (秘密情報はランダム生成)
 make setup    # データディレクトリを作成
-make up       # 起動 (rustfs + nginx)
+make up       # 起動 (rustfs のみ)
 make health   # 疎通確認
 ```
 
@@ -53,14 +48,13 @@ make health   # 疎通確認
 よく使う操作は Makefile にまとめてある。`make` で一覧を表示。
 
 ```
-make up          起動する (rustfs + nginx)
+make up          起動する (rustfs のみ)
 make up-all      監視スタック込みで起動する
 make down        停止する
 make ps          コンテナの状態を表示する
 make logs S=rustfs  ログを追う
-make health      各エンドポイントの疎通を確認する
+make health      各サービスの疎通を確認する
 make s3-check    S3 の疎通を確認する (署名・HEAD・特殊文字キー)
-make nginx-reload   nginx.conf の変更を反映する
 make backup DEST=... オブジェクトデータをバックアップする
 ```
 
@@ -73,9 +67,8 @@ make backup DEST=... オブジェクトデータをバックアップする
 
 - ディスク 4 本 → 1 本（SNSD）
 - データ・ログを named volume から `/srv/rustfs/` の bind mount に変更
-- nginx 以外のポート公開を廃止し、Grafana / Prometheus をサブパス配信に
-- nginx を SigV4 対応に修正（`$http_host` 引き渡し、`proxy_cache_convert_head off`、
-  keepalive、大容量オブジェクト向けのバッファリング無効化）
+- nginx リバースプロキシを廃止し、各サービスがホストへ直接ポートを公開する構成に変更
+  （リバースプロキシが必要な場合は本リポジトリの外で別途用意する）
 - Jaeger を削除（トレースは Tempo に集約）
 - 全イメージのバージョンを固定
 - ソースビルド用サービス (`rustfs-dev`) を削除し、公開イメージを使用

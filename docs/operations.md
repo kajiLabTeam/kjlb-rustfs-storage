@@ -34,7 +34,7 @@ make env          # .env.example から生成し、秘密情報はランダム�
 $EDITOR .env      # ホスト名など環境に合わせて調整
 make env-check    # 未設定・弱い値がないか確認
 
-docker compose --profile proxy --profile observability up -d
+docker compose --profile observability up -d
 ```
 
 `make setup` と `make up-all` でも同じことができる。
@@ -50,10 +50,10 @@ docker compose --profile proxy --profile observability up -d
 | `GRAFANA_ADMIN_USER` | `admin` | |
 | `GRAFANA_ADMIN_PASSWORD` | `admin` | **必ず設定する** |
 | `RUSTFS_OBS_ENDPOINT` | 空（送信しない） | 監視を使うなら `http://otel-collector:4318` |
-| `GRAFANA_ROOT_URL` | `http://localhost/grafana/` | 外部から見えるURLに合わせる |
-| `PROMETHEUS_EXTERNAL_URL` | `http://localhost/prometheus/` | 同上 |
-| `NGINX_HTTP_PORT` | `80` | 変更時はクライアントのエンドポイントURLにもポートを含める |
-| `NGINX_HTTPS_PORT` | `443` | 同上 |
+| `RUSTFS_S3_PORT` | `9000` | 変更時はクライアントのエンドポイントURLにもポートを含める |
+| `RUSTFS_CONSOLE_PORT` | `9001` | 同上 |
+| `GRAFANA_PORT` | `3000` | 同上 |
+| `PROMETHEUS_PORT` | `9090` | 同上 |
 | `RUSTFS_DATA_DIR` | `/srv/rustfs/data` | オブジェクトデータの保存先（ホスト側） |
 | `RUSTFS_LOGS_DIR` | `/srv/rustfs/logs` | ログの保存先（ホスト側） |
 
@@ -73,7 +73,6 @@ profile でサービス群を切り替える。
 | profile | サービス |
 | --- | --- |
 | （なし） | rustfs, volume-permission-helper |
-| `proxy` | nginx |
 | `observability` | otel-collector, prometheus, tempo, loki, grafana |
 
 Makefile に主要な操作をまとめてある（`make` で一覧）。
@@ -81,28 +80,25 @@ Makefile に主要な操作をまとめてある（`make` で一覧）。
 
 | make | docker compose |
 | --- | --- |
-| `make up` | `docker compose --profile proxy up -d` |
-| `make up-all` | `docker compose --profile proxy --profile observability up -d` |
-| `make down` | `docker compose --profile proxy --profile observability down` |
+| `make up` | `docker compose up -d` |
+| `make up-all` | `docker compose --profile observability up -d` |
+| `make down` | `docker compose --profile observability down` |
 | `make ps` | `... ps` |
 | `make logs S=rustfs` | `... logs -f rustfs` |
 
 ```sh
 # 通常運用
-docker compose --profile proxy up -d
+docker compose up -d
 
 # 監視込み
-docker compose --profile proxy --profile observability up -d
+docker compose --profile observability up -d
 
 # 停止
-docker compose --profile proxy --profile observability down
+docker compose --profile observability down
 
 # 状態確認
-docker compose --profile proxy --profile observability ps
+docker compose --profile observability ps
 ```
-
-**`--profile proxy` は必須。** rustfs はホストにポートを公開しておらず、
-nginx 経由でしかアクセスできないため、付け忘れると外部から到達できない。
 
 `down -v` は監視スタックの named volume（Prometheus / Grafana / Tempo / Loki の
 データ）を削除する。オブジェクトデータは `/srv/rustfs/` の bind mount なので
@@ -110,72 +106,54 @@ nginx 経由でしかアクセスできないため、付け忘れると外部�
 
 ## ネットワーク境界
 
-ホストに公開しているポートは **nginx の 80 / 443 のみ**。
-他のサービスはすべて Docker ネットワーク内に閉じている。
+各サービスがホストへ自身のポートを直接公開する。
 
-```
-        外部
-         │  80 / 443
-    ┌────▼─────┐
-    │  nginx   │
-    └────┬─────┘
-         │  /              → rustfs:9000  (S3 API)
-         │  /rustfs/console → rustfs:9001  (コンソール)
-         │  /grafana/       → grafana:3000
-         │  /prometheus/    → prometheus:9090
-```
+| サービス | ポート | 環境変数 |
+| --- | --- | --- |
+| rustfs（S3 API） | 9000 | `RUSTFS_S3_PORT` |
+| rustfs（コンソール） | 9001 | `RUSTFS_CONSOLE_PORT` |
+| grafana | 3000 | `GRAFANA_PORT` |
+| prometheus | 9090 | `PROMETHEUS_PORT` |
 
-Prometheus は認証機構を持たないため、公開環境では nginx の `/prometheus/`
-ブロックにある `allow` / `deny` のコメントを外して接続元を制限すること。
+本リポジトリはリバースプロキシを含まない。外部公開・TLS 終端・ドメインの
+集約などが必要な場合は、別途用意するリバースプロキシからこれらのポートへ
+接続する構成を想定している（プロキシの設定自体は本リポジトリのスコープ外）。
 
-Tempo / Loki / otel-collector には外部からの入口を用意していない。
+Prometheus は認証機構を持たないため、公開環境では外部のリバースプロキシや
+ファイアウォールで接続元を制限すること。
+
+Tempo / Loki / otel-collector にはホストへのポート公開を用意していない。
 参照は Grafana 経由で行う。ホスト外のアプリからも OTLP でテレメトリを
 送りたい場合のみ、otel-collector に `ports:` で 4317 / 4318 を公開する。
 
-## URL 一覧
-
-| URL | 内容 |
-| --- | --- |
-| `/` | S3 API |
-| `/rustfs/console` | RustFS コンソール |
-| `/grafana/` | Grafana（ダッシュボード 7 種を自動プロビジョニング） |
-| `/prometheus/` | Prometheus |
-
 ## TLS
 
-1. 証明書と鍵を `.docker/nginx/ssl/` に配置する
-2. `.docker/nginx/nginx.conf` の 443 サーバーブロックのコメントを外し、
-   `server_name` を実際のホスト名にする
-3. 80 番ブロックの `return 301 https://$host$request_uri;` を有効にする
-4. `.env` の `GRAFANA_ROOT_URL` / `PROMETHEUS_EXTERNAL_URL` を `https://` に変更
-5. `docker compose --profile proxy up -d nginx` で反映
+本リポジトリの構成自体は TLS を終端しない。TLS が必要な場合は、外部に
+用意するリバースプロキシ側で証明書を配置し、各サービスのポート
+（9000 / 9001 / 3000 / 9090）へ接続する構成にすること。
 
-`server_name` は**クライアントが実際にアクセスするホスト名と一致させる**こと。
-SigV4 の署名には Host ヘッダが含まれるため、ここがずれると認証が通らない。
+リバースプロキシの `server_name` / Host ヘッダは**クライアントが実際に
+アクセスするホスト名と一致させる**こと。SigV4 の署名には Host ヘッダが
+含まれるため、ここがずれると認証が通らない。
 
-## nginx を変更するときの注意（SigV4）
+## リバースプロキシを構成する際の注意（SigV4）
 
 S3 の SigV4 署名は **HTTP メソッド・リクエストパス・Host ヘッダ**を
 署名計算に含む。プロキシがこれらを書き換えると `SignatureDoesNotMatch` になる。
-
-nginx.conf を編集する際は以下を壊さないこと。
+外部にリバースプロキシを立てる場合は以下を壊さないこと。
 
 | 守ること | 理由 |
 | --- | --- |
-| S3 API は `location /` のまま | サブパス配信は署名を壊す。先頭セグメントはバケット名でもある |
-| `proxy_pass http://rustfs_s3;` に URI を付けない | URI を付けると nginx がパスを正規化し、記号や日本語を含むキーで署名が壊れる |
-| `rewrite` や正規表現 location を使わない | 同上 |
-| `proxy_set_header Host $http_host;` | `$host` はポート番号を落とすため署名と食い違う |
-| `proxy_cache_convert_head off;` | nginx はキャッシュ有効時 HEAD を GET に変換する。メソッドが変わると署名が壊れる |
+| S3 API のパスをリライト・正規化しない | パスを書き換えると、記号や日本語を含むキーで署名が壊れる |
+| サブパス配信にしない（`/s3/` 等を前置しない） | 先頭セグメントはバケット名でもあるため、署名とパスの解釈が壊れる |
+| Host ヘッダをそのまま転送する | ポート番号込みの Host ヘッダで署名されるため、書き換えると署名と食い違う |
+| HEAD リクエストを GET に変換しない（キャッシュ設定に注意） | メソッドが変わると署名が壊れる |
 
 変更後は必ず以下で疎通確認する。
 
 ```sh
-make nginx-reload   # 構文チェックしてから再読込
 make s3-check       # 署名・HEAD・特殊文字キーの疎通確認
 ```
-
-`/grafana/` と `/prometheus/` は S3 ではないので、これらの制約は適用されない。
 
 ## バックアップ
 
@@ -190,7 +168,7 @@ make backup DEST=/mnt/backup/rustfs
 rsync -a --delete /srv/rustfs/data/ backup-host:/backup/rustfs/data/
 
 # S3 レベルで別ストレージへ同期する例
-aws --endpoint-url http://localhost s3 sync s3://my-bucket s3://backup-bucket \
+aws --endpoint-url http://localhost:9000 s3 sync s3://my-bucket s3://backup-bucket \
     --profile backup-target
 ```
 
@@ -203,7 +181,7 @@ aws --endpoint-url http://localhost s3 sync s3://my-bucket s3://backup-bucket \
 | --- | --- |
 | RustFS のログファイル | `$RUSTFS_LOGS_DIR`（既定 `/srv/rustfs/logs/`） |
 | コンテナの標準出力 | `docker compose logs -f <service>` |
-| nginx アクセスログ | `docker compose logs nginx`（tmpfs のため再起動で消える） |
+| 外部リバースプロキシのアクセスログ | プロキシ側の設定・保管先を参照（本リポジトリの管轄外） |
 | 収集されたログ | Grafana → Explore → Loki データソース |
 
 ログレベルは compose.yaml の `RUSTFS_OBS_LOGGER_LEVEL` で変更する
@@ -239,8 +217,8 @@ rustfs --OTLP--> otel-collector --+--> tempo      (トレース)
 タグを書き換えてから起動しなおす。
 
 ```sh
-docker compose --profile proxy --profile observability pull
-docker compose --profile proxy --profile observability up -d
+docker compose --profile observability pull
+docker compose --profile observability up -d
 ```
 
 RustFS は現在 1.0.0 のベータ版しかリリースされていない。
@@ -269,17 +247,18 @@ volumes 定義は変更不要。パーミッション調整も
 | path-style を指定していない | クライアント設定を確認（[usage.md](usage.md)） |
 | リージョンの不一致 | クライアント側のリージョン設定 |
 | アクセスキー／シークレットキーの誤り | `.env` と照合 |
-| nginx の設定変更 | 上記「nginx を変更するときの注意」を確認 |
+| 外部リバースプロキシの設定変更 | 上記「リバースプロキシを構成する際の注意」を確認 |
 | クライアントとサーバーの時刻ずれ | 15 分以上ずれると署名が無効になる。NTP を確認 |
 
 ### 外部からアクセスできない
 
-`--profile proxy` を付けて起動しているか確認する。
-rustfs 単体ではホストにポートを公開していない。
+rustfs コンテナがホストへポートを公開しているか確認する。外部から
+アクセスする場合は、別途用意するリバースプロキシがこれらのポートへ
+到達できているかも確認する。
 
 ```sh
 docker ps --format '{{.Names}}\t{{.Ports}}'
-# nginx-proxy に 0.0.0.0:80->80/tcp があること
+# rustfs-server に 0.0.0.0:9000->9000/tcp, 0.0.0.0:9001->9001/tcp があること
 ```
 
 ### rustfs が起動しない / パーミッションエラー
@@ -292,20 +271,17 @@ ls -la "$(grep RUSTFS_DATA_DIR .env | cut -d= -f2)"
 # 10001:10001 所有であること
 ```
 
-### /grafana/ が 502
+### Grafana / Prometheus に接続できない
 
-`observability` profile を起動していない。
+`observability` profile を起動していない可能性が高い。
 
 ```sh
-docker compose --profile proxy --profile observability up -d
+docker compose --profile observability up -d
 ```
-
-nginx は Grafana 不在でも起動できるよう Docker 内蔵 DNS で実行時に
-名前解決している。502 は異常ではなく「未起動」を意味する。
 
 ### Prometheus のターゲットが down
 
-`/prometheus/targets` で確認する。`observability` profile 内の
+`http://<ホスト>:9090/targets` で確認する。`observability` profile 内の
 サービスが起動しているか、`.docker/observability/prometheus.yml` の
 ターゲット名が compose のサービス名と一致しているかを見る。
 
@@ -315,5 +291,5 @@ nginx は Grafana 不在でも起動できるよう Docker 内蔵 DNS で実行�
 設定を追加した場合は rustfs の再作成が必要。
 
 ```sh
-docker compose --profile proxy --profile observability up -d --force-recreate rustfs
+docker compose --profile observability up -d --force-recreate rustfs
 ```

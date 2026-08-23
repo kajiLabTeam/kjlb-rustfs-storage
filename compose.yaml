@@ -4,11 +4,12 @@ services:
     container_name: rustfs-server
     security_opt:
       - "no-new-privileges:true"
-    # ホストへのポート公開はしない。S3 API とコンソールへのアクセスは
-    # すべて nginx (profile: proxy) 経由に限定する。
-    expose:
-      - "9000" # S3 API
-      - "9001" # Console
+    # S3 API とコンソールをホストへ直接公開する。
+    # 外部への公開が必要な場合は、別途用意するリバースプロキシから
+    # これらのポートへ接続する。
+    ports:
+      - "${RUSTFS_S3_PORT:-9000}:9000" # S3 API
+      - "${RUSTFS_CONSOLE_PORT:-9001}:9001" # Console
     environment:
       # SNSD (Single Node Single Disk) 構成
       # SNMD へ移行する場合は /data/rustfs{0...3} のように展開し、
@@ -121,19 +122,12 @@ services:
       - "--web.enable-lifecycle"
       - "--web.enable-otlp-receiver"
       - "--web.enable-remote-write-receiver"
-      # nginx の /prometheus/ 配下で配信する。
-      # external-url は生成するリンクの絶対URL用。route-prefix=/ を明示して
-      # 内部的にはルートで待ち受けさせ、prefix の除去は nginx 側で行う。
-      # (route-prefix を /prometheus/ にすると自己スクレイプと
-      #  Grafana データソースが 404 になる)
-      - "--web.external-url=${PROMETHEUS_EXTERNAL_URL:-http://localhost/prometheus/}"
-      - "--web.route-prefix=/"
     volumes:
       - ./.docker/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
-    # ホストへのポート公開はしない。アクセスは nginx (profile: proxy) 経由に限定する。
-    expose:
-      - "9090"
+    # Prometheus をホストへ直接公開する。
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
     networks:
       - rustfs-network
     restart: unless-stopped
@@ -171,17 +165,13 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin} # CHANGEME
-      # nginx の /grafana/ 配下で配信するための設定。
-      # 外部から見えるホスト名が localhost 以外なら .env で GRAFANA_ROOT_URL を上書きする。
-      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost/grafana/}
-      - GF_SERVER_SERVE_FROM_SUB_PATH=true
     volumes:
       - grafana_data:/var/lib/grafana
       - ./.docker/observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./.docker/observability/grafana/dashboards:/etc/grafana/dashboards:ro
-    # ホストへのポート公開はしない。アクセスは nginx (profile: proxy) 経由に限定する。
-    expose:
-      - "3000"
+    # Grafana をホストへ直接公開する。
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
     networks:
       - rustfs-network
     restart: unless-stopped
@@ -191,34 +181,6 @@ services:
       - prometheus
       - tempo
       - loki
-
-  # --- リバースプロキシ (profile: proxy) ---
-  # 起動: docker compose --profile proxy up -d
-  # TLS を使う場合は .docker/nginx/ssl/ に証明書を置き、nginx.conf の 443 ブロックを有効化する
-
-  nginx:
-    image: nginx:1.29-alpine
-    container_name: nginx-proxy
-    security_opt:
-      - "no-new-privileges:true"
-    read_only: true
-    volumes:
-      - ./.docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./.docker/nginx/ssl:/etc/nginx/ssl:ro
-    tmpfs:
-      - /var/run
-      - /var/cache/nginx
-      - /var/log/nginx
-    ports:
-      - "${NGINX_HTTP_PORT:-80}:80"
-      - "${NGINX_HTTPS_PORT:-443}:443"
-    networks:
-      - rustfs-network
-    restart: unless-stopped
-    profiles:
-      - proxy
-    depends_on:
-      - rustfs
 
 networks:
   rustfs-network:

@@ -8,7 +8,7 @@ RustFS は S3 互換ストレージなので、AWS SDK / CLI がそのまま使�
 
 | 項目 | 値 |
 | --- | --- |
-| エンドポイント | `http://<ホスト>/`（TLS 設定後は `https://<ホスト>/`） |
+| エンドポイント | `http://<ホスト>:9000/`（TLS を使う場合は外部のリバースプロキシ経由の URL） |
 | アクセスキー | `.env` の `RUSTFS_ACCESS_KEY` |
 | シークレットキー | `.env` の `RUSTFS_SECRET_KEY` |
 | リージョン | `us-east-1`（任意の値でよいが、統一すること） |
@@ -39,7 +39,7 @@ aws configure set s3.addressing_style   path
 以降 `--endpoint-url` を付けて実行する。
 
 ```sh
-EP=http://storage.example.com
+EP=http://storage.example.com:9000
 
 # バケット
 aws --endpoint-url $EP s3 mb s3://my-bucket
@@ -61,7 +61,7 @@ aws --endpoint-url $EP s3api head-object --bucket my-bucket --key path/local.txt
 毎回 `--endpoint-url` を書くのが面倒なら環境変数でもよい。
 
 ```sh
-export AWS_ENDPOINT_URL=http://storage.example.com
+export AWS_ENDPOINT_URL=http://storage.example.com:9000
 ```
 
 ## Python (boto3)
@@ -72,7 +72,7 @@ from botocore.config import Config
 
 s3 = boto3.client(
     "s3",
-    endpoint_url="http://storage.example.com",
+    endpoint_url="http://storage.example.com:9000",
     aws_access_key_id="<ACCESS_KEY>",
     aws_secret_access_key="<SECRET_KEY>",
     region_name="us-east-1",
@@ -112,7 +112,7 @@ url = s3.generate_presigned_url(
 $s3 = new Aws\S3\S3Client([
     'version'                 => 'latest',
     'region'                  => 'us-east-1',
-    'endpoint'                => 'http://storage.example.com',
+    'endpoint'                => 'http://storage.example.com:9000',
     'use_path_style_endpoint' => true,   // 必須
     'credentials'             => [
         'key'    => getenv('S3_ACCESS_KEY'),
@@ -137,7 +137,7 @@ cfg, _ := config.LoadDefaultConfig(ctx,
 )
 
 client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-    o.BaseEndpoint = aws.String("http://storage.example.com")
+    o.BaseEndpoint = aws.String("http://storage.example.com:9000")
     o.UsePathStyle = true // 必須
 })
 ```
@@ -166,27 +166,19 @@ aws --endpoint-url $EP s3api put-bucket-cors --bucket my-bucket \
 
 ## Web コンソール
 
-http://\<ホスト\>/rustfs/console
+http://\<ホスト\>:9001/rustfs/console
 
 アクセスキー／シークレットキーでログインし、バケットとオブジェクトを
 GUI で操作できる。
 
 ## 制約と注意点
 
-### バケット名に使えない名前
-
-nginx のリバースプロキシが以下のパスを使っているため、**同名のバケットは作れない**。
-S3 のパス形式では先頭セグメントがバケット名になり、名前空間が衝突するため。
-
-- `rustfs`（コンソール）
-- `grafana`
-- `prometheus`
-
 ### サブパスでの配信は不可
 
 `https://example.com/s3/` のような形で S3 API を配信することはできない。
 SigV4 署名がパスを含むため壊れる。詳細は [operations.md](operations.md) の
 SigV4 の節を参照。ホスト名を分ける（`s3.example.com`）のは問題ない。
+外部にリバースプロキシを立てる場合も同様の制約を守る必要がある。
 
 ### 単一ノード構成
 
@@ -196,4 +188,5 @@ SigV4 の節を参照。ホスト名を分ける（`s3.example.com`）のは問�
 ### 大容量ファイル
 
 100MB を超えるファイルは SDK のマルチパートアップロードが自動的に使われる。
-nginx 側でリクエストサイズ制限は外してあるので、特別な設定は不要。
+本リポジトリの構成自体にリクエストサイズ制限は無い。外部にリバースプロキシを
+置く場合は、そちら側のリクエストサイズ上限に注意すること。

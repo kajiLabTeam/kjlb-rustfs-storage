@@ -4,8 +4,7 @@
 # `make` または `make help` で一覧を表示する。
 
 COMPOSE       := docker compose
-PROFILES      := --profile proxy
-PROFILES_ALL  := --profile proxy --profile observability
+PROFILES_ALL  := --profile observability
 ENV_FILE      := .env
 
 # .env があれば読み込む（マウント先や S3 の認証情報を使う）
@@ -18,11 +17,11 @@ endif
 RUSTFS_DATA_DIR ?= /srv/rustfs/data
 RUSTFS_LOGS_DIR ?= /srv/rustfs/logs
 
-ENDPOINT ?= http://localhost
+HOST ?= localhost
 
 .DEFAULT_GOAL := help
 .PHONY: help env env-check setup up up-all down down-all restart ps logs logs-rustfs health \
-        config nginx-test nginx-reload pull update backup console shell \
+        config pull update backup console shell \
         s3-ls s3-mb s3-check clean
 
 ## ヘルプを表示
@@ -84,9 +83,9 @@ setup:
 
 # ------------------------------------------------------------------ 起動・停止
 
-## 起動する (rustfs + nginx)
+## 起動する (rustfs のみ)
 up:
-	$(COMPOSE) $(PROFILES) up -d
+	$(COMPOSE) up -d
 
 ## 監視スタック込みで起動する
 up-all:
@@ -118,35 +117,27 @@ logs:
 logs-rustfs:
 	$(COMPOSE) logs -f --tail=100 rustfs
 
-## 各エンドポイントの疎通を確認する
+## 各サービスの疎通を確認する (直接ポートを叩く)
 health:
-	@for e in "S3 API|/|403=正常" \
-	          "コンソール|/rustfs/console|" \
-	          "Grafana|/grafana/|502=observability未起動" \
-	          "Prometheus|/prometheus/|502=observability未起動"; do \
-	  name=$${e%%|*}; rest=$${e#*|}; path=$${rest%%|*}; note=$${rest#*|}; \
-	  code=$$(curl -sL -o /dev/null -w '%{http_code}' "$(ENDPOINT)$${path}" 2>/dev/null); \
+	@for e in "S3 API|9000|/health|200=正常" \
+	          "コンソール|9001|/rustfs/console/health|200=正常" \
+	          "Grafana|3000|/login|200=正常 (observability profile)" \
+	          "Prometheus|9090|/-/healthy|200=正常 (observability profile)"; do \
+	  name=$${e%%|*}; rest=$${e#*|}; port=$${rest%%|*}; rest=$${rest#*|}; \
+	  path=$${rest%%|*}; note=$${rest#*|}; \
+	  code=$$(curl -sL -o /dev/null -w '%{http_code}' "http://$(HOST):$${port}$${path}" 2>/dev/null); \
 	  case "$${code}" in ""|000) code="接続不可"; note="未起動?";; \
 	    $${note%%=*}) note="$${note#*=}";; *) note="";; esac; \
 	  printf '  %-12s %-9s %s\n' "$${name}" "$${code}" "$${note}"; \
 	done
-	@echo "--- 公開ポート (nginx の 80/443 のみが正常) ---"
-	@docker ps --format '  {{.Names}}\t{{.Ports}}' | grep -E 'rustfs|nginx|grafana|prometheus|tempo|loki|otel' || echo "  (起動中のコンテナなし)"
+	@echo "--- 公開ポート ---"
+	@docker ps --format '  {{.Names}}\t{{.Ports}}' | grep -E 'rustfs|grafana|prometheus|tempo|loki|otel' || echo "  (起動中のコンテナなし)"
 
 # ------------------------------------------------------------------- 設定確認
 
 ## compose.yaml の構文を検証する
 config:
 	@$(COMPOSE) $(PROFILES_ALL) config -q && echo "compose.yaml OK"
-
-## nginx.conf の構文を検証する (nginx 起動中のみ)
-nginx-test:
-	$(COMPOSE) exec nginx nginx -t
-
-## nginx.conf の変更を反映する
-nginx-reload: nginx-test
-	$(COMPOSE) exec nginx nginx -s reload
-	@echo "nginx を再読込しました"
 
 # --------------------------------------------------------------------- 更新
 
@@ -167,7 +158,7 @@ backup:
 
 ## コンソールの URL を表示する
 console:
-	@echo "$(ENDPOINT)/rustfs/console"
+	@echo "http://$(HOST):9001/rustfs/console"
 
 ## rustfs コンテナにシェルで入る
 shell:
@@ -180,7 +171,7 @@ AWS = docker run --rm --network kjlb-rustfs-storage_rustfs-network \
         -e AWS_ACCESS_KEY_ID=$(RUSTFS_ACCESS_KEY) \
         -e AWS_SECRET_ACCESS_KEY=$(RUSTFS_SECRET_KEY) \
         -e AWS_DEFAULT_REGION=us-east-1 \
-        amazon/aws-cli:latest --endpoint-url http://nginx
+        amazon/aws-cli:latest --endpoint-url http://rustfs:9000
 
 ## バケット一覧を表示する
 s3-ls:
@@ -189,8 +180,6 @@ s3-ls:
 ## バケットを作成する (B=バケット名)
 s3-mb:
 	@test -n "$(B)" || { echo "使い方: make s3-mb B=bucket-name"; exit 1; }
-	@case "$(B)" in rustfs|grafana|prometheus) \
-	  echo "!! '$(B)' は nginx の location と衝突するため使用できません"; exit 1;; esac
 	@$(AWS) s3 mb s3://$(B)
 
 ## S3 の疎通を確認する (署名・HEAD・特殊文字キー)
@@ -201,7 +190,7 @@ s3-check:
 	  -e AWS_ACCESS_KEY_ID=$(RUSTFS_ACCESS_KEY) \
 	  -e AWS_SECRET_ACCESS_KEY=$(RUSTFS_SECRET_KEY) \
 	  -e AWS_DEFAULT_REGION=us-east-1 --entrypoint sh amazon/aws-cli:latest -c ' \
-	    A="aws --endpoint-url http://nginx"; \
+	    A="aws --endpoint-url http://rustfs:9000"; \
 	    echo test > /tmp/t.txt; \
 	    $$A s3api put-object --bucket makecheck --key "a b/日本語 +file.txt" --body /tmp/t.txt >/dev/null \
 	      && echo "  特殊文字キー OK"; \
