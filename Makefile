@@ -4,7 +4,6 @@
 # `make` または `make help` で一覧を表示する。
 
 COMPOSE       := docker compose
-PROFILES_ALL  := --profile observability
 ENV_FILE      := .env
 
 # .env があれば読み込む（マウント先や S3 の認証情報を使う）
@@ -20,7 +19,7 @@ RUSTFS_LOGS_DIR ?= /srv/rustfs/logs
 HOST ?= localhost
 
 .DEFAULT_GOAL := help
-.PHONY: help env env-check setup up up-all down down-all restart ps logs logs-rustfs health \
+.PHONY: help env env-check setup up down restart ps logs logs-rustfs health \
         config pull update backup console shell \
         s3-ls s3-mb s3-check clean
 
@@ -38,14 +37,12 @@ help:
 env:
 	@test ! -f $(ENV_FILE) || { echo "!! $(ENV_FILE) は既に存在します。上書きする場合は削除してから実行してください"; exit 1; }
 	@sk=$$(openssl rand -base64 32 | tr -d '/+=' | cut -c1-40); \
-	 gp=$$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24); \
 	 sed -e "s|^RUSTFS_ACCESS_KEY=.*|RUSTFS_ACCESS_KEY=rustfs|" \
 	     -e "s|^RUSTFS_SECRET_KEY=.*|RUSTFS_SECRET_KEY=$${sk}|" \
-	     -e "s|^GRAFANA_ADMIN_PASSWORD=.*|GRAFANA_ADMIN_PASSWORD=$${gp}|" \
 	     .env.example > $(ENV_FILE)
 	@chmod 600 $(ENV_FILE)
 	@echo "OK: $(ENV_FILE) を生成しました。内容を確認してください:"
-	@grep -E '^(RUSTFS_ACCESS_KEY|RUSTFS_SECRET_KEY|GRAFANA_ADMIN_PASSWORD)=' $(ENV_FILE) | sed 's/^/  /'
+	@grep -E '^(RUSTFS_ACCESS_KEY|RUSTFS_SECRET_KEY)=' $(ENV_FILE) | sed 's/^/  /'
 
 ## .env に不足している項目を確認する
 env-check:
@@ -53,16 +50,13 @@ env-check:
 	@awk -F= '\
 	  /^RUSTFS_ACCESS_KEY=/      {v[$$1]=$$2} \
 	  /^RUSTFS_SECRET_KEY=/      {v[$$1]=$$2} \
-	  /^GRAFANA_ADMIN_PASSWORD=/ {v[$$1]=$$2} \
 	  END { \
 	    ng=0; \
-	    split("RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY GRAFANA_ADMIN_PASSWORD", k, " "); \
+	    split("RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY", k, " "); \
 	    for (i in k) if (v[k[i]] == "") { printf "  未設定: %s\n", k[i]; ng=1 } \
 	    if (v["RUSTFS_SECRET_KEY"] != "" && length(v["RUSTFS_SECRET_KEY"]) < 32) { \
 	      printf "  警告: RUSTFS_SECRET_KEY が %d 文字です (32文字以上を推奨)\n", \
 	             length(v["RUSTFS_SECRET_KEY"]); ng=1 } \
-	    if (v["GRAFANA_ADMIN_PASSWORD"] == "admin") { \
-	      print "  警告: GRAFANA_ADMIN_PASSWORD が既定値のままです"; ng=1 } \
 	    if (ng == 0) print "$(ENV_FILE) OK" \
 	  }' $(ENV_FILE)
 
@@ -76,42 +70,33 @@ setup:
 	  echo "!! $(ENV_FILE) がありません。以下を作成してください:"; \
 	  echo "   RUSTFS_ACCESS_KEY=..."; \
 	  echo "   RUSTFS_SECRET_KEY=..."; \
-	  echo "   GRAFANA_ADMIN_PASSWORD=..."; \
 	  exit 1; \
 	}
 	@echo "OK: $(RUSTFS_DATA_DIR) と $(RUSTFS_LOGS_DIR) を作成しました"
 
 # ------------------------------------------------------------------ 起動・停止
 
-## 起動する (rustfs のみ)
+## 起動する
 up:
 	$(COMPOSE) up -d
 
-## 監視スタック込みで起動する
-up-all:
-	$(COMPOSE) $(PROFILES_ALL) up -d
-
 ## 停止する
 down:
-	$(COMPOSE) $(PROFILES_ALL) down
-
-## 停止し監視データも削除する (オブジェクトデータは残る)
-down-all:
-	$(COMPOSE) $(PROFILES_ALL) down -v
+	$(COMPOSE) down
 
 ## 再起動する
 restart:
-	$(COMPOSE) $(PROFILES_ALL) restart
+	$(COMPOSE) restart
 
 # ---------------------------------------------------------------------- 状態
 
 ## コンテナの状態を表示する
 ps:
-	@$(COMPOSE) $(PROFILES_ALL) ps
+	@$(COMPOSE) ps
 
 ## ログを追う (S=サービス名 で絞り込み)
 logs:
-	$(COMPOSE) $(PROFILES_ALL) logs -f --tail=100 $(S)
+	$(COMPOSE) logs -f --tail=100 $(S)
 
 ## rustfs のログを追う
 logs-rustfs:
@@ -120,9 +105,7 @@ logs-rustfs:
 ## 各サービスの疎通を確認する (直接ポートを叩く)
 health:
 	@for e in "S3 API|9000|/health|200=正常" \
-	          "コンソール|9001|/rustfs/console/health|200=正常" \
-	          "Grafana|3000|/login|200=正常 (observability profile)" \
-	          "Prometheus|9090|/-/healthy|200=正常 (observability profile)"; do \
+	          "コンソール|9001|/rustfs/console/health|200=正常"; do \
 	  name=$${e%%|*}; rest=$${e#*|}; port=$${rest%%|*}; rest=$${rest#*|}; \
 	  path=$${rest%%|*}; note=$${rest#*|}; \
 	  code=$$(curl -sL -o /dev/null -w '%{http_code}' "http://$(HOST):$${port}$${path}" 2>/dev/null); \
@@ -131,22 +114,22 @@ health:
 	  printf '  %-12s %-9s %s\n' "$${name}" "$${code}" "$${note}"; \
 	done
 	@echo "--- 公開ポート ---"
-	@docker ps --format '  {{.Names}}\t{{.Ports}}' | grep -E 'rustfs|grafana|prometheus|tempo|loki|otel' || echo "  (起動中のコンテナなし)"
+	@docker ps --format '  {{.Names}}\t{{.Ports}}' | grep -E 'rustfs' || echo "  (起動中のコンテナなし)"
 
 # ------------------------------------------------------------------- 設定確認
 
 ## compose.yaml の構文を検証する
 config:
-	@$(COMPOSE) $(PROFILES_ALL) config -q && echo "compose.yaml OK"
+	@$(COMPOSE) config -q && echo "compose.yaml OK"
 
 # --------------------------------------------------------------------- 更新
 
 ## イメージを取得する
 pull:
-	$(COMPOSE) $(PROFILES_ALL) pull
+	$(COMPOSE) pull
 
 ## イメージを取得して再起動する
-update: pull up-all
+update: pull up
 
 # ------------------------------------------------------------------- 運用補助
 

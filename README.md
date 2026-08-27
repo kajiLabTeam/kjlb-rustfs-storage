@@ -8,28 +8,25 @@ RustFS (S3 互換オブジェクトストレージ) の Docker 構成。
   （AWS CLI / boto3 / PHP / Go の設定例、署名付き URL、制約）
 - **[運用ガイド](docs/operations.md)** — 構築・起動停止・TLS・バックアップ・
   監視・トラブルシューティング
+- **[.docker/ 設定リファレンス](docs/docker.md)** — 本リポジトリの `.docker/`
+  配下について（監視スタックは別リポジトリに分離済み）
 
 ## 構成
 
 SNSD (Single Node Single Disk)。将来 SNMD へ拡張可能。
 
-各サービスがホストへ自身のポートを直接公開する（S3 API: 9000, コンソール: 9001,
-Grafana: 3000, Prometheus: 9090）。リバースプロキシ（TLS 終端、集約ドメインなど）
-が必要な場合は、本リポジトリの外で別途用意し、これらのポートへ接続する。
+各サービスがホストへ自身のポートを直接公開する（S3 API: 9000, コンソール: 9001）。
+リバースプロキシ（TLS 終端、集約ドメインなど）が必要な場合は、本リポジトリの外で
+別途用意し、これらのポートへ接続する。
 
 | サービス | 既定ポート | 環境変数 |
 | --- | --- | --- |
 | S3 API | 9000 | `RUSTFS_S3_PORT` |
 | コンソール | 9001 | `RUSTFS_CONSOLE_PORT` |
-| Grafana | 3000 | `GRAFANA_PORT` |
-| Prometheus | 9090 | `PROMETHEUS_PORT` |
 
-Docker Compose の profile でサービス群を切り替える。
-
-| profile | サービス | 用途 |
-| --- | --- | --- |
-| （なし） | rustfs, volume-permission-helper | ストレージ本体 |
-| `observability` | otel-collector, prometheus, tempo, loki, grafana | 監視 |
+Grafana / Prometheus / Tempo / Loki による監視は、別リポジトリ
+[kjlb-observability-stack](../kjlb-observability-stack) に分離してある。
+本リポジトリとの連携は `.env` の `RUSTFS_OBS_ENDPOINT`（OTLP 送信先）のみ。
 
 ## クイックスタート
 
@@ -48,8 +45,7 @@ make health   # 疎通確認
 よく使う操作は Makefile にまとめてある。`make` で一覧を表示。
 
 ```
-make up          起動する (rustfs のみ)
-make up-all      監視スタック込みで起動する
+make up          起動する
 make down        停止する
 make ps          コンテナの状態を表示する
 make logs S=rustfs  ログを追う

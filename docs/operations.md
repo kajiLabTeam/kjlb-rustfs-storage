@@ -34,10 +34,10 @@ make env          # .env.example から生成し、秘密情報はランダム�
 $EDITOR .env      # ホスト名など環境に合わせて調整
 make env-check    # 未設定・弱い値がないか確認
 
-docker compose --profile observability up -d
+make up
 ```
 
-`make setup` と `make up-all` でも同じことができる。
+`make setup` と `make up` でも同じことができる。
 
 ### .env の項目
 
@@ -47,20 +47,16 @@ docker compose --profile observability up -d
 | --- | --- | --- |
 | `RUSTFS_ACCESS_KEY` | `rustfsadmin` | **必ず設定する**（既定値は公知） |
 | `RUSTFS_SECRET_KEY` | `rustfsadmin` | **必ず設定する**。32文字以上を推奨 |
-| `GRAFANA_ADMIN_USER` | `admin` | |
-| `GRAFANA_ADMIN_PASSWORD` | `admin` | **必ず設定する** |
-| `RUSTFS_OBS_ENDPOINT` | 空（送信しない） | 監視を使うなら `http://otel-collector:4318` |
+| `RUSTFS_OBS_ENDPOINT` | 空（送信しない） | 監視を使うなら別リポジトリ kjlb-observability-stack の `http://host.docker.internal:4318` |
 | `RUSTFS_S3_PORT` | `9000` | 変更時はクライアントのエンドポイントURLにもポートを含める |
 | `RUSTFS_CONSOLE_PORT` | `9001` | 同上 |
-| `GRAFANA_PORT` | `3000` | 同上 |
-| `PROMETHEUS_PORT` | `9090` | 同上 |
 | `RUSTFS_DATA_DIR` | `/srv/rustfs/data` | オブジェクトデータの保存先（ホスト側） |
 | `RUSTFS_LOGS_DIR` | `/srv/rustfs/logs` | ログの保存先（ホスト側） |
 
 `.env` を変更したら、コンテナを再作成しないと反映されない。
 
 ```sh
-make up-all   # 変更のあったサービスだけ再作成される
+make up   # 変更のあったサービスだけ再作成される
 ```
 
 ディレクトリの所有者は `volume-permission-helper` が起動時に
@@ -68,63 +64,46 @@ RustFS の実行ユーザ (10001:10001) へ変更するため、手動の chown 
 
 ## 起動と停止
 
-profile でサービス群を切り替える。
-
-| profile | サービス |
-| --- | --- |
-| （なし） | rustfs, volume-permission-helper |
-| `observability` | otel-collector, prometheus, tempo, loki, grafana |
-
 Makefile に主要な操作をまとめてある（`make` で一覧）。
 以下は同等の docker compose コマンド。
 
 | make | docker compose |
 | --- | --- |
 | `make up` | `docker compose up -d` |
-| `make up-all` | `docker compose --profile observability up -d` |
-| `make down` | `docker compose --profile observability down` |
+| `make down` | `docker compose down` |
 | `make ps` | `... ps` |
 | `make logs S=rustfs` | `... logs -f rustfs` |
 
 ```sh
-# 通常運用
+# 起動
 docker compose up -d
 
-# 監視込み
-docker compose --profile observability up -d
-
 # 停止
-docker compose --profile observability down
+docker compose down
 
 # 状態確認
-docker compose --profile observability ps
+docker compose ps
 ```
-
-`down -v` は監視スタックの named volume（Prometheus / Grafana / Tempo / Loki の
-データ）を削除する。オブジェクトデータは `/srv/rustfs/` の bind mount なので
-`down -v` では消えない。
 
 ## ネットワーク境界
 
-各サービスがホストへ自身のポートを直接公開する。
+rustfs がホストへ自身のポートを直接公開する。
 
 | サービス | ポート | 環境変数 |
 | --- | --- | --- |
 | rustfs（S3 API） | 9000 | `RUSTFS_S3_PORT` |
 | rustfs（コンソール） | 9001 | `RUSTFS_CONSOLE_PORT` |
-| grafana | 3000 | `GRAFANA_PORT` |
-| prometheus | 9090 | `PROMETHEUS_PORT` |
 
 本リポジトリはリバースプロキシを含まない。外部公開・TLS 終端・ドメインの
 集約などが必要な場合は、別途用意するリバースプロキシからこれらのポートへ
 接続する構成を想定している（プロキシの設定自体は本リポジトリのスコープ外）。
 
-Prometheus は認証機構を持たないため、公開環境では外部のリバースプロキシや
-ファイアウォールで接続元を制限すること。
-
-Tempo / Loki / otel-collector にはホストへのポート公開を用意していない。
-参照は Grafana 経由で行う。ホスト外のアプリからも OTLP でテレメトリを
-送りたい場合のみ、otel-collector に `ports:` で 4317 / 4318 を公開する。
+監視（Grafana / Prometheus / Tempo / Loki / otel-collector）は別リポジトリ
+[kjlb-observability-stack](../../kjlb-observability-stack) に分離してある。
+本リポジトリの rustfs サービスは `extra_hosts` で `host.docker.internal` を
+解決できるようにしてあり、`RUSTFS_OBS_ENDPOINT` にその監視スタックの
+otel-collector のホスト公開ポート（既定 `http://host.docker.internal:4318`）を
+設定すればテレメトリを送信できる。
 
 ## TLS
 
@@ -172,9 +151,6 @@ aws --endpoint-url http://localhost:9000 s3 sync s3://my-bucket s3://backup-buck
     --profile backup-target
 ```
 
-監視スタックのデータ（メトリクス・ログ・トレース）は再現可能なので、
-通常はバックアップ対象に含めなくてよい。
-
 ## ログ
 
 | 対象 | 場所 |
@@ -182,34 +158,30 @@ aws --endpoint-url http://localhost:9000 s3 sync s3://my-bucket s3://backup-buck
 | RustFS のログファイル | `$RUSTFS_LOGS_DIR`（既定 `/srv/rustfs/logs/`） |
 | コンテナの標準出力 | `docker compose logs -f <service>` |
 | 外部リバースプロキシのアクセスログ | プロキシ側の設定・保管先を参照（本リポジトリの管轄外） |
-| 収集されたログ | Grafana → Explore → Loki データソース |
+| 収集されたログ | 別リポジトリ kjlb-observability-stack の Grafana → Explore → Loki データソース |
 
 ログレベルは compose.yaml の `RUSTFS_OBS_LOGGER_LEVEL` で変更する
 （`info` / `debug` など）。
 
 ## 監視
 
-Grafana に RustFS 用ダッシュボードが 7 種プロビジョニングされている。
-
-- RustFS（全体）
-- GET Data Integrity / GET Performance Attribution / GET Resource Impact
-- GET Rollout Health / Object Data Cache / PUT Performance Attribution
-
-データソースは Prometheus（メトリクス）、Loki（ログ）、Tempo（トレース）の 3 つ。
-テレメトリは rustfs → otel-collector → 各バックエンドという流れで送られる。
+Grafana / Prometheus / Tempo / Loki による監視は別リポジトリ
+[kjlb-observability-stack](../../kjlb-observability-stack) に分離してある。
+本リポジトリとの連携ポイントは `.env` の `RUSTFS_OBS_ENDPOINT`（OTLP 送信先）のみ。
 
 ```
-rustfs --OTLP--> otel-collector --+--> tempo      (トレース)
-                                  +--> prometheus (メトリクス, 8889 を scrape)
-                                  +--> loki       (ログ)
-                                          │
-                                       grafana
+rustfs --OTLP (ホスト経由)--> otel-collector --+--> tempo      (トレース)
+                                                +--> prometheus (メトリクス)
+                                                +--> loki       (ログ)
+                                                        │
+                                                     grafana
 ```
 
-`.env` に `RUSTFS_OBS_ENDPOINT=http://otel-collector:4318` を設定していないと
+`.env` に `RUSTFS_OBS_ENDPOINT=http://host.docker.internal:4318` を設定していないと
 テレメトリは送信されない。監視スタックを起動しない構成では未設定のままにする。
 
-設定ファイルは `.docker/observability/` 配下にある。
+監視スタック側の設定ファイル・ダッシュボード・運用手順は
+kjlb-observability-stack リポジトリの `docs/operations.md` を参照。
 
 ## バージョン更新
 
@@ -217,8 +189,8 @@ rustfs --OTLP--> otel-collector --+--> tempo      (トレース)
 タグを書き換えてから起動しなおす。
 
 ```sh
-docker compose --profile observability pull
-docker compose --profile observability up -d
+docker compose pull
+docker compose up -d
 ```
 
 RustFS は現在 1.0.0 のベータ版しかリリースされていない。
@@ -273,23 +245,14 @@ ls -la "$(grep RUSTFS_DATA_DIR .env | cut -d= -f2)"
 
 ### Grafana / Prometheus に接続できない
 
-`observability` profile を起動していない可能性が高い。
-
-```sh
-docker compose --profile observability up -d
-```
-
-### Prometheus のターゲットが down
-
-`http://<ホスト>:9090/targets` で確認する。`observability` profile 内の
-サービスが起動しているか、`.docker/observability/prometheus.yml` の
-ターゲット名が compose のサービス名と一致しているかを見る。
+別リポジトリ kjlb-observability-stack を起動していない可能性が高い。
+そちらのリポジトリで `make up` を実行する。
 
 ### 監視にデータが出ない
 
-`.env` の `RUSTFS_OBS_ENDPOINT` が設定されているか確認する。
-設定を追加した場合は rustfs の再作成が必要。
+`.env` の `RUSTFS_OBS_ENDPOINT` が設定されているか、kjlb-observability-stack が
+起動しているか確認する。設定を追加した場合は rustfs の再作成が必要。
 
 ```sh
-docker compose --profile observability up -d --force-recreate rustfs
+docker compose up -d --force-recreate rustfs
 ```

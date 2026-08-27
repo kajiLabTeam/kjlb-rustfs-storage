@@ -23,8 +23,9 @@ services:
       - RUSTFS_SECRET_KEY=${RUSTFS_SECRET_KEY:-rustfsadmin} # CHANGEME
       - RUSTFS_OBS_LOGGER_LEVEL=info
       - RUSTFS_OBS_LOG_DIRECTORY=/logs
-      # 監視スタック (profile: observability) を併用する場合のみ .env で
-      # RUSTFS_OBS_ENDPOINT=http://otel-collector:4318 を設定する
+      # 監視スタックは別リポジトリ (kjlb-observability-stack) に分離した。
+      # 使う場合は .env で RUSTFS_OBS_ENDPOINT=http://host.docker.internal:4318
+      # を設定する（監視スタックの otel-collector がホストへ公開する OTLP HTTP ポート）。
       - RUSTFS_OBS_ENDPOINT=${RUSTFS_OBS_ENDPOINT:-}
     volumes:
       - ${RUSTFS_DATA_DIR:-/srv/rustfs/data}:/data
@@ -32,6 +33,10 @@ services:
     networks:
       - rustfs-network
     restart: unless-stopped
+    # host.docker.internal で別リポジトリ (kjlb-observability-stack) の
+    # otel-collector にホスト経由で到達できるようにする (Linux 用)。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test:
         [
@@ -60,138 +65,6 @@ services:
       sh -c "chown -R 10001:10001 /data /logs && echo 'Volume permissions fixed'"
     restart: "no"
 
-  # --- 監視スタック (profile: observability) ---
-  # 起動: docker compose --profile observability up -d
-
-  tempo-init:
-    image: busybox:1.37
-    command: ["sh", "-c", "chown -R 10001:10001 /var/tempo"]
-    user: root
-    volumes:
-      - tempo_data:/var/tempo
-    networks:
-      - rustfs-network
-    restart: "no"
-    profiles:
-      - observability
-
-  tempo:
-    image: grafana/tempo:2.10.5
-    container_name: tempo
-    user: "10001"
-    command: ["-config.file=/etc/tempo.yaml"]
-    volumes:
-      - ./.docker/observability/tempo.yaml:/etc/tempo.yaml:ro
-      - tempo_data:/var/tempo
-    # ホストへのポート公開はしない。参照は Grafana 経由。
-    expose:
-      - "3200" # Tempo API
-      - "4317" # OTLP gRPC (otel-collector から)
-    networks:
-      - rustfs-network
-    restart: unless-stopped
-    profiles:
-      - observability
-    depends_on:
-      tempo-init:
-        condition: service_completed_successfully
-
-  loki:
-    image: grafana/loki:3.7.4
-    container_name: loki
-    command: -config.file=/etc/loki/local-config.yaml
-    volumes:
-      - ./.docker/observability/loki.yaml:/etc/loki/local-config.yaml:ro
-      - loki_data:/loki
-    # ホストへのポート公開はしない。参照は Grafana 経由。
-    expose:
-      - "3100"
-    networks:
-      - rustfs-network
-    restart: unless-stopped
-    profiles:
-      - observability
-
-  prometheus:
-    image: prom/prometheus:v3.13.2
-    container_name: prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=30d"
-      - "--web.enable-lifecycle"
-      - "--web.enable-otlp-receiver"
-      - "--web.enable-remote-write-receiver"
-    volumes:
-      - ./.docker/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    # Prometheus をホストへ直接公開する。
-    ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
-    networks:
-      - rustfs-network
-    restart: unless-stopped
-    profiles:
-      - observability
-
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.157.0
-    container_name: otel-collector
-    command:
-      - --config=/etc/otelcol-contrib/otel-collector.yml
-    volumes:
-      - ./.docker/observability/otel-collector-config.yaml:/etc/otelcol-contrib/otel-collector.yml:ro
-    # ホストへのポート公開はしない。テレメトリの受信は同一ネットワーク内に限定する。
-    # ホスト外のアプリからも送信したい場合のみ ports で 4317/4318 を公開する。
-    expose:
-      - "4317"  # OTLP gRPC
-      - "4318"  # OTLP HTTP
-      - "8888"  # Collector 自身のメトリクス (Prometheus が scrape)
-      - "8889"  # アプリケーションメトリクス (Prometheus が scrape)
-      - "13133" # ヘルスチェック
-    networks:
-      - rustfs-network
-    restart: unless-stopped
-    profiles:
-      - observability
-    depends_on:
-      - tempo
-      - prometheus
-      - loki
-
-  grafana:
-    image: grafana/grafana:12.4.6
-    container_name: grafana
-    environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin} # CHANGEME
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./.docker/observability/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./.docker/observability/grafana/dashboards:/etc/grafana/dashboards:ro
-    # Grafana をホストへ直接公開する。
-    ports:
-      - "${GRAFANA_PORT:-3000}:3000"
-    networks:
-      - rustfs-network
-    restart: unless-stopped
-    profiles:
-      - observability
-    depends_on:
-      - prometheus
-      - tempo
-      - loki
-
 networks:
   rustfs-network:
     driver: bridge
-
-volumes:
-  tempo_data:
-    driver: local
-  loki_data:
-    driver: local
-  prometheus_data:
-    driver: local
-  grafana_data:
-    driver: local
